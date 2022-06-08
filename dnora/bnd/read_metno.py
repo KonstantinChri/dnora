@@ -1,4 +1,6 @@
+import os
 import xarray as xr
+import glob
 import numpy as np
 from copy import copy
 from abc import ABC, abstractmethod
@@ -9,15 +11,19 @@ from .read import BoundaryReader
 
 # Import auxiliry functions
 from .. import msg
-from ..aux import day_list, create_time_stamps
+from ..aux import day_list, create_time_stamps, CachedReaderMixin
 
-class WAM4km(BoundaryReader):
-    def __init__(self, ignore_nan: bool=True, stride: int=6, hours_per_file: int=73, last_file: str='', lead_time: int=0) -> None:
+class WAM4km(BoundaryReader, CachedReaderMixin):
+    def __init__(self, ignore_nan: bool=True, stride: int=6,
+                 hours_per_file: int=73, last_file: str='', lead_time: int=0,
+                 clean_cache: bool=False) -> None:
         self.ignore_nan = copy(ignore_nan)
         self.stride = copy(stride)
         self.hours_per_file = copy(hours_per_file)
         self.lead_time = copy(lead_time)
         self.last_file = copy(last_file)
+        self.clean_cache = copy(clean_cache)
+        self.cache_folder = 'dnora_bnd_temp'
         return
 
     def convention(self) -> str:
@@ -59,6 +65,13 @@ class WAM4km(BoundaryReader):
         if hasattr(self, 'pointers'):
             inds = self.pointers[0][inds]
 
+        if self.clean_cache:
+            for f in glob.glob(os.path.join(self.cache_folder, '*')):
+                os.remove(f)
+
+        if not os.path.isdir(self.cache_folder):
+            os.mkdir(self.cache_folder)
+            print("Creating cache folder %s..." % cache_folder)
 
         start_times, end_times, file_times = create_time_stamps(start_time, end_time, stride = self.stride, hours_per_file = self.hours_per_file, last_file = self.last_file, lead_time = self.lead_time)
 
@@ -67,14 +80,40 @@ class WAM4km(BoundaryReader):
         bnd_list = []
         for n in range(len(file_times)):
             url = self.get_url(file_times[n])
-            msg.from_file(url)
+            url_or_cache, data_from_cache = self.get_filepath_if_cached(grid, url)
+            msg.from_file(url_or_cache)
             msg.plain(f"Reading boundary spectra: {start_times[n]}-{end_times[n]}")
-            with xr.open_dataset(url) as f:
-                this_ds = f.sel(time = slice(start_times[n], end_times[n]), x = (inds+1))[['SPEC', 'longitude', 'latitude', 'time', 'freq', 'direction']].copy()
-            bnd_list.append(this_ds)
+            if data_from_cache:
+                this_ds = xr.load_dataset(url_or_cache)
+                bnd_list.append(this_ds)
+            else:
+                try:
+                    with xr.open_dataset(url) as f:
+                        this_ds = f.sel(
+                            time=slice(start_times[n], end_times[n]),
+                            x=inds+1,
+                        )[
+                            ['SPEC', 'longitude', 'latitude', 'time', 'freq', 'direction']
+                        ].copy()
+                    if (
+                        not bnd_list # always trust the first file that is read
+                        or ( # for the rest, check for consistency with first file
+                            (this_ds.longitude == bnd_list[0].longitude).all() and
+                            (this_ds.latitude  == bnd_list[0].latitude ).all()
+
+                        )):
+                        bnd_list.append(this_ds)
+                        self.write_to_cache(this_ds, url)
+                    else:
+                        msg.plain(f'SKIPPING, file inconsistent: {url}')
+
+
+                except OSError:
+                    msg.plain(f'SKIPPING, file not found: {url}')
+
 
         msg.info("Merging dataset together (this might take a while)...")
-        bnd=xr.concat(bnd_list, dim="time").squeeze('y')
+        bnd = xr.concat(bnd_list, dim="time").squeeze('y')
 
         time = bnd.time.values
         freq = bnd.freq.values
