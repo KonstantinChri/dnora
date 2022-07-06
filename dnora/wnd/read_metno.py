@@ -68,10 +68,11 @@ class NORA3(ForcingReader):
         # Define area to search in
         lon_min, lon_max, lat_min, lat_max = expand_area(min(grid.lon()), max(grid.lon()), min(grid.lat()), max(grid.lat()), expansion_factor)
 
-        # Set resolution to about 3 km
-        dlat = 3/111
-        mean_lon_in_km = (lon_in_km(grid.lat()[0])+lon_in_km(grid.lat()[-1]))*0.5
-        dlon = 3/mean_lon_in_km
+        # Set resolution to about 2.5 km
+        dlat = 2.5/111
+        #mean_lon_in_km = (lon_in_km(grid.lat()[0])+lon_in_km(grid.lat()[-1]))*0.5
+        mean_lon_in_km = lon_in_km(np.median(grid.lat()))
+        dlon = 2.5/mean_lon_in_km
 
         wnd_list = []
         for n in range(len(file_times)):
